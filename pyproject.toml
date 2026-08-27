@@ -1,0 +1,70 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "langcompress"
+version = "0.1.0"
+description = "Production-grade context compression middleware for LangGraph/LangChain agents"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10,<4.0"
+keywords = ["langgraph", "langchain", "compression", "context", "middleware", "agent"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# 核心：仅 langchain-core + pydantic。middleware.py 适配层不在核心导入图里，
+# 它走 [middleware] extra 依赖 langchain（AgentMiddleware/SummarizationMiddleware 所在包）。
+dependencies = [
+    "langchain-core>=1.4.0,<2.0.0",
+    "pydantic>=2.7.0,<3.0.0",
+]
+
+[project.optional-dependencies]
+middleware = ["langchain>=1.2.0,<2.0.0"]
+tiktoken = ["tiktoken>=0.7.0"]
+llm = ["langchain-openai>=0.3.0,<1.0.0"]
+all = ["langchain>=1.2.0,<2.0.0", "tiktoken>=0.7.0", "langchain-openai>=0.3.0,<1.0.0"]
+dev = [
+    "langchain>=1.2.0,<2.0.0",
+    "tiktoken>=0.7.0",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.6.0",
+    "mypy>=1.10.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/langcompress"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+# Pragmatic strict subset (not full `strict = true` — that would force
+# `disallow_untyped_defs` and reject the project's intentionally-loosely-typed
+# hook callables in config.py). These flags catch real bugs without blocking
+# the host-facing surface that is deliberately typed as bare `dict`/`list`.
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+no_implicit_optional = true
+check_untyped_defs = true

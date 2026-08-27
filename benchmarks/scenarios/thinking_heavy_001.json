@@ -1,0 +1,551 @@
+{
+  "id": "thinking_heavy_001",
+  "category": "thinking_heavy",
+  "description": "A debugging and design session where assistant messages carry long reasoning content (Gemini-style content-part reasoning plus OpenAI-style reasoning_content kwargs) before each conclusion. L0 strips the reasoning; the summary must keep the conclusions (segments 5, 2, 8).",
+  "target_segments": [
+    5,
+    2,
+    8
+  ],
+  "tools": [],
+  "transcript": [
+    {
+      "role": "user",
+      "content": "We have an intermittent bug: occasionally two orders get the same order number. The backend is a Go service with Postgres. Where do I start?"
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "reasoning",
+          "reasoning": "Intermittent duplicates suggest a race rather than a logic error. Go services with Postgres typically generate order numbers either from a sequence, from a UUID, or from a read-modify-write on a counter table. If it were a sequence, duplicates would be impossible. If it were UUID, collisions are negligible. So the likely path is read-modify-write: two concurrent requests read the same MAX(order_no), both increment to the same next value, and both insert. The intermittent nature fits a race that only fires when two requests overlap in the window between SELECT and INSERT. A transaction does not help under READ COMMITTED because both snapshots can see the same MAX. I should ask the user to confirm the code path before proposing a fix."
+        },
+        {
+          "type": "text",
+          "text": "Duplicate order numbers with intermittent timing points to a read-modify-write race on the counter: two requests read MAX(order_no) and both write MAX+1. The fix class is either a Postgres sequence (let the database own monotonicity) or SELECT FOR UPDATE on a counter row. Can you confirm the code path first?"
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": "Confirmed, the code does SELECT MAX(order_no) then inserts. It's wrapped in a transaction but that doesn't help."
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "reasoning",
+          "reasoning": "The user confirmed SELECT MAX then INSERT inside a transaction. Under READ COMMITTED, two concurrent transactions can both read the same MAX and both insert the same next number; the transaction gives isolation, not exclusion. Serializable mode would abort one of them but at a retry cost and a different failure mode. The two clean fixes: a Postgres sequence, which is gap-tolerant but race-free by construction, or a dedicated counter row locked with SELECT FOR UPDATE, which serializes the read-modify-write and can be gap-free if that matters. I need to know whether gap-free numbering is a requirement before choosing."
+        },
+        {
+          "type": "text",
+          "text": "Right: a plain transaction gives isolation, not exclusion, so both transactions can read the same MAX under READ COMMITTED and both insert. The minimal fix is SELECT FOR UPDATE on a dedicated counter row, which serializes the read-modify-write. A Postgres sequence is even simpler if you don't need gap-free numbers. Do you?"
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": "Do we need gap-free order numbers? Legal says invoices must be sequential."
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "reasoning",
+          "reasoning": "Legal requires sequential invoice numbers, meaning gap-free. A Postgres sequence burns values on rollback and crash recovery, so sequences are disqualified for invoices specifically. The counter-row approach with FOR UPDATE inside the same transaction as the invoice insert makes number assignment and invoice creation atomic: if the transaction rolls back, the counter update rolls back too, so no hole. Important nuance: order IDs and invoice numbers are different concepts. Orders can keep a sequence because nobody requires gap-free order IDs; only invoices carry the legal constraint. Conflating the two would over-constrain the order path."
+        },
+        {
+          "type": "text",
+          "text": "If legal requires gap-free sequential invoice numbers, a Postgres sequence is out, because sequences tolerate gaps on rollback. Use the counter-row plus FOR UPDATE approach inside the invoice-issuing transaction: the lock serializes numbering and the transaction makes number and invoice atomic. Keep order IDs on a sequence, separate from invoice numbers."
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": "Good distinction: order IDs can stay a sequence, invoice numbers go through the counter row. Now a design question: should we adopt event sourcing for the inventory service while we're in there?"
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "reasoning",
+          "reasoning": "Event sourcing considerations. Benefits: complete audit trail, temporal queries (stock at time T), natural fit for eventual-consistency integrations. Costs: a projection layer to make queries fast, event schema evolution discipline, replay and reintegration complexity, and steeper onboarding for the team. Their stated scale is about 50k orders per day with 3 services reading inventory; the audit need is real but modest. The middle path is CRUD plus an append-only movements table: every mutation is an insert into inventory_movements, current state is derivable, and the audit trail is complete without any projection infrastructure. Given team size and scale, the operational tax of full event sourcing is not justified by the requirements."
+        },
+        {
+          "type": "text",
+          "text": "For your scale, roughly 50k orders a day with three services reading inventory, event sourcing buys audit trails and temporal queries but costs a projection layer, event schema evolution, and replay complexity. My call: stay with CRUD plus an append-only inventory_movements table for audit. You get the audit trail without the operational tax."
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": "Agreed, CRUD plus the movements table. What should the movements table capture?"
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "reasoning",
+          "reasoning": "The movements table needs to be sufficient to reconstruct stock and to explain every change. Columns: id for the row identity, order_id to trace the cause, sku as the dimension, delta as the signed quantity change, reason as the business category (sale, return, shrinkage, correction), created_at for ordering. A check constraint delta <> 0 prevents meaningless no-op rows. Current stock is SUM(delta) grouped by sku, which stays a single source of truth; a denormalized stock column would be a second source that can drift. Only materialize the denormalized column if profiling shows stock reads are hot, and if so update it in the same transaction."
+        },
+        {
+          "type": "text",
+          "text": "inventory_movements: id, order_id, sku, delta, reason, created_at, with a check constraint delta <> 0 and an index on (sku, created_at). Current stock is SUM(delta) per sku. Add a denormalized stock column later only if reads become hot."
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": "We'll compute stock as SUM(delta); reads are not hot yet."
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "reasoning",
+          "reasoning": "SUM(delta) keeps one source of truth, which is the right default. The user's read traffic is low, so the aggregate query cost is irrelevant for now. The migration for the invoice counter is the remaining deliverable: a table keyed by year so numbers reset annually, a BIGINT last_no to avoid overflow, and the Go change to SELECT FOR UPDATE inside the invoice transaction. Under READ COMMITTED, FOR UPDATE blocks the second reader rather than aborting it, so no retry loop is needed; that is the key ergonomic difference from optimistic approaches."
+        },
+        {
+          "type": "text",
+          "text": "SUM(delta) keeps a single source of truth; add the denormalized column only if stock reads show up in profiling. Next: want the migration for the invoice counter row and the changed Go function?"
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": "Yes, write the migration and the changed Go function."
+    },
+    {
+      "role": "assistant",
+      "content": "Migration: CREATE TABLE invoice_counters (year INT PRIMARY KEY, last_no BIGINT NOT NULL DEFAULT 0). Go: inside the invoice transaction, SELECT last_no FROM invoice_counters WHERE year = $1 FOR UPDATE, then UPDATE invoice_counters SET last_no = last_no + 1 WHERE year = $1, and use the fetched value + 1 as the invoice number. No retry loop is needed: FOR UPDATE blocks rather than aborts under READ COMMITTED.",
+      "additional_kwargs": {
+        "reasoning_content": "The migration needs a table keyed by year so invoice numbers reset annually rather than growing unbounded: CREATE TABLE invoice_counters (year INT PRIMARY KEY, last_no BIGINT NOT NULL DEFAULT 0). The Go function must do the SELECT FOR UPDATE inside the same transaction as the invoice insert, otherwise the lock releases before the number is consumed and the atomicity guarantee is lost. Fetching last_no, updating to last_no + 1, and using fetched + 1 in the same transaction makes number and invoice commit or roll back together. FOR UPDATE under READ COMMITTED blocks concurrent readers rather than aborting them, so no retry logic is needed."
+      }
+    },
+    {
+      "role": "user",
+      "content": "Deployed to staging. Should we run the concurrency test?"
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "reasoning",
+          "reasoning": "A concurrency test should hammer the exact invariant: many parallel invoice creations for the same year must produce exactly N distinct sequential numbers. 500 parallel workers is enough to surface any residual race while staying cheap in staging. Success criteria: 500 unique numbers, zero duplicates, and latency within the usual envelope. If p95 grows, that is the expected lock serialization, not a defect, but it should be quantified so the team can accept it knowingly."
+        },
+        {
+          "type": "text",
+          "text": "Hammer it: 500 parallel invoice creations for the same year in staging. Expected result is 500 distinct sequential numbers, zero duplicates, and p95 within your usual latency envelope."
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": "Staging test: 500 parallel creates, 500 unique numbers 1 to 500, zero duplicates. But p95 rose from 12ms to 34ms."
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "reasoning",
+          "reasoning": "The 22ms p95 regression is the FOR UPDATE serialization: invoice numbering is inherently serial, so throughput is bounded by lock hold time. This is expected and bounded, not a bug. If it ever matters, the lever is shortening the transaction by issuing the number early and doing the remaining work after the commit, but that reintroduces gap risk on abort: a number could be consumed and then the invoice creation fails, leaving a hole. That trade is only acceptable if legal relaxes the sequential requirement. So the recommendation is to accept 34ms now and revisit only under real latency pressure."
+        },
+        {
+          "type": "text",
+          "text": "The 22ms p95 regression is the lock serialization, which is expected and bounded: invoice numbering is inherently serial, so throughput equals one over lock-hold time. 34ms p95 is acceptable. If it grows, shortening the transaction would reintroduce gap risk on abort, so only do that if legal relaxes the sequential requirement."
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": "Acceptable for now. What about the read replicas? Do they see stale invoice numbers?"
+    },
+    {
+      "role": "assistant",
+      "content": "Replicas will lag by the replication delay, typically under a second. Use read-your-writes on the confirmation path: route a user's own reads to the primary for about 5 seconds after their write. Invoice numbering itself always hits the primary.",
+      "additional_kwargs": {
+        "reasoning_content": "Physical replication on Postgres typically lags well under a second, but that is still a window where a confirmation read served by a replica misses the just-written invoice. The standard mitigation is read-your-writes: pin a user's own reads to the primary for a short window, about 5 seconds, after their write. Invoice numbering itself is a write path and must always hit the primary; only confirmation reads are candidates for replicas. This keeps correctness without giving up replica offload for the bulk of read traffic."
+      }
+    },
+    {
+      "role": "user",
+      "content": "Understood. Last item: the alerting. What should we alert on for the invoice path?"
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "reasoning",
+          "reasoning": "Three alert classes cover the invoice path. First, lock wait time on invoice_counters above 100ms indicates serialization pressure building before users feel it. Second, duplicate-number constraint violations: with FOR UPDATE these should be impossible, so an occurrence is a canary that the invariant itself broke, which is qualitatively different from ordinary load. Third, replication lag above 5 seconds on replicas serving confirmation reads, because the read-your-writes window assumes sub-second lag. These three together watch the mechanism, the invariant, and the assumption."
+        },
+        {
+          "type": "text",
+          "text": "Alert on: lock wait over 100ms on invoice_counters (serialization pressure), duplicate-number constraint violations (a canary for the invariant, should be impossible), and replication lag over 5 seconds on replicas serving confirmation reads."
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": "Alerts configured. Summarize the session's decisions."
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "reasoning",
+          "reasoning": "Recap the decisions in order: the root cause diagnosis, the split between order IDs and invoice numbers, the counter-row fix, the event-sourcing rejection, the movements table, the accepted latency regression, the replica strategy, and the alerting. Each decision had a stated reason that should be preserved with the decision so future readers understand why, not just what."
+        },
+        {
+          "type": "text",
+          "text": "Decisions: (1) order IDs stay on a Postgres sequence; (2) invoice numbers use the invoice_counters row with FOR UPDATE inside the invoice transaction, gap-free per legal; (3) inventory stays CRUD with an append-only inventory_movements table, stock computed as SUM(delta); (4) event sourcing rejected at current scale; (5) the 34ms p95 lock serialization is accepted; (6) read-your-writes on confirmation reads, primary for 5 seconds after a user's write; (7) alerts on lock wait over 100ms, duplicate canary, and replication lag over 5 seconds."
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": "One audit question: why exactly was a sequence ruled out for invoice numbers?"
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "reasoning",
+          "reasoning": "The audit question deserves the precise mechanism, not the shorthand. Sequences in Postgres are non-transactional by design: they increment immediately and are not rolled back when the surrounding transaction aborts. A crash or rollback between consuming a value and committing the invoice leaves a permanent gap. Legal requires sequential invoice numbers with no gaps, so the sequence's core efficiency feature, never blocking, is exactly what disqualifies it here. The counter row trades throughput for the gap-free guarantee, which is the correct trade under the legal constraint."
+        },
+        {
+          "type": "text",
+          "text": "A Postgres sequence is not gap-free: rollbacks and crashes burn sequence values permanently because sequences do not participate in transaction rollback. Legal requires sequential invoice numbers, so the sequence's never-blocking design is exactly what disqualifies it. The counter row with FOR UPDATE keeps numbering atomic with invoice creation, so a failed transaction leaves no hole."
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": "Also, file the runbook note about the invoice path for the on-call engineers."
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "reasoning",
+          "reasoning": "The runbook note should translate the session's technical conclusions into on-call actions: what normal looks like (p95 up to about 35ms under contention is expected), what to check before escalating (the lock-wait alert on invoice_counters), and what never to do (moving invoice writes to replicas). A runbook that explains the why prevents an on-call engineer from 'fixing' the expected serialization or routing writes to a replica at 3am."
+        },
+        {
+          "type": "text",
+          "text": "Runbook note filed: invoice numbering is serialized by the invoice_counters FOR UPDATE lock; p95 up to about 35ms under contention is expected; check the lock-wait alert before escalating; and never move invoice writes to replicas."
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": "Anything else we should do before closing this out?"
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "reasoning",
+          "reasoning": "One hygiene item remains: the old SELECT MAX code path is now dead code. Dead code with a known race in it is a landmine, because a future contributor could reintroduce it without knowing the history. Deleting it this sprint, while the context is fresh, closes the loop. Beyond that, every decision has been implemented, tested, alerted, and documented."
+        },
+        {
+          "type": "text",
+          "text": "One cleanup: the old SELECT MAX code path is now dead; delete it this sprint so nobody reintroduces the race. Otherwise we're done."
+        }
+      ]
+    }
+  ],
+  "facts": [
+    {
+      "id": "F1",
+      "text": "Duplicate order numbers stemmed from a read-modify-write race: SELECT MAX(order_no) then insert, where a plain transaction gives isolation but not exclusion.",
+      "message_ids": [
+        1,
+        2,
+        3
+      ],
+      "segment": 5
+    },
+    {
+      "id": "F2",
+      "text": "Invoice numbers must be gap-free and sequential per legal; order IDs may use a sequence but invoice numbers may not.",
+      "message_ids": [
+        4,
+        5
+      ],
+      "segment": 2
+    },
+    {
+      "id": "F3",
+      "text": "Fix: an invoice_counters table (year, last_no) with SELECT FOR UPDATE inside the invoice transaction; FOR UPDATE blocks rather than aborts, so no retry loop is needed.",
+      "message_ids": [
+        11
+      ],
+      "segment": 5
+    },
+    {
+      "id": "F4",
+      "text": "Inventory stays CRUD with an append-only inventory_movements table (id, order_id, sku, delta, reason, created_at); stock is computed as SUM(delta).",
+      "message_ids": [
+        7,
+        9,
+        10
+      ],
+      "segment": 2
+    },
+    {
+      "id": "F5",
+      "text": "Event sourcing was rejected at the current scale of about 50k orders per day; the movements table provides audit without a projection layer.",
+      "message_ids": [
+        7
+      ],
+      "segment": 2
+    },
+    {
+      "id": "F6",
+      "text": "Staging concurrency test: 500 parallel creates produced 500 unique numbers with zero duplicates; p95 rose from 12ms to 34ms due to lock serialization, which was accepted.",
+      "message_ids": [
+        13,
+        14,
+        15
+      ],
+      "segment": 5
+    },
+    {
+      "id": "F7",
+      "text": "Confirmation reads use read-your-writes: route to the primary for about 5 seconds after a user's own write; invoice writes always hit the primary.",
+      "message_ids": [
+        17
+      ],
+      "segment": 2
+    },
+    {
+      "id": "F8",
+      "text": "Alerts configured: lock wait over 100ms on invoice_counters, duplicate-number constraint violations as a canary, replication lag over 5 seconds.",
+      "message_ids": [
+        19
+      ],
+      "segment": 2
+    },
+    {
+      "id": "F9",
+      "text": "A sequence was ruled out for invoices because rollbacks and crashes burn sequence values, leaving permanent gaps.",
+      "message_ids": [
+        23
+      ],
+      "segment": 2
+    },
+    {
+      "id": "F10",
+      "text": "Shortening the invoice transaction would reintroduce gap risk and is only viable if legal relaxes the sequential requirement.",
+      "message_ids": [
+        15
+      ],
+      "segment": 2
+    },
+    {
+      "id": "F11",
+      "text": "Runbook note filed: p95 up to about 35ms under contention is expected, check the lock-wait alert before escalating, and never move invoice writes to replicas.",
+      "message_ids": [
+        25
+      ],
+      "segment": 7
+    },
+    {
+      "id": "F12",
+      "text": "Cleanup filed: delete the dead SELECT MAX code path this sprint so the race cannot be reintroduced.",
+      "message_ids": [
+        27
+      ],
+      "segment": 7
+    }
+  ],
+  "entities": [
+    {
+      "name": "root_cause",
+      "value": "read-modify-write race on the order-number counter",
+      "message_ids": [
+        1
+      ]
+    },
+    {
+      "name": "fix_table",
+      "value": "invoice_counters",
+      "message_ids": [
+        11
+      ]
+    },
+    {
+      "name": "legal_constraint",
+      "value": "gap-free sequential invoice numbers",
+      "message_ids": [
+        4,
+        5
+      ]
+    },
+    {
+      "name": "stock_formula",
+      "value": "SUM(delta) over inventory_movements",
+      "message_ids": [
+        9,
+        10
+      ]
+    },
+    {
+      "name": "p95_before",
+      "value": "12ms",
+      "message_ids": [
+        14
+      ]
+    },
+    {
+      "name": "p95_after",
+      "value": "34ms",
+      "message_ids": [
+        14,
+        15
+      ]
+    },
+    {
+      "name": "rejected_design",
+      "value": "event sourcing",
+      "message_ids": [
+        7
+      ]
+    },
+    {
+      "name": "lock_alert_threshold",
+      "value": "100ms lock wait",
+      "message_ids": [
+        19
+      ]
+    }
+  ],
+  "qa_probes": [
+    {
+      "id": "Q1",
+      "question": "What was the root cause of the duplicate order numbers?",
+      "answer": "A read-modify-write race on the counter: SELECT MAX then insert, where transactions give isolation but not exclusion.",
+      "answer_keywords": [
+        "race"
+      ],
+      "source_message_ids": [
+        1,
+        3
+      ],
+      "segment": 5
+    },
+    {
+      "id": "Q2",
+      "question": "Why can't invoice numbers use a Postgres sequence?",
+      "answer": "Sequences burn values on rollback or crash, leaving permanent gaps, and legal requires gap-free sequential invoices.",
+      "answer_keywords": [
+        "gap"
+      ],
+      "source_message_ids": [
+        5,
+        23
+      ],
+      "segment": 2
+    },
+    {
+      "id": "Q3",
+      "question": "Which table and locking mechanism fix the invoice numbering?",
+      "answer": "The invoice_counters table with SELECT FOR UPDATE inside the invoice transaction.",
+      "answer_keywords": [
+        "invoice_counters",
+        "for update"
+      ],
+      "source_message_ids": [
+        11
+      ],
+      "segment": 5
+    },
+    {
+      "id": "Q4",
+      "question": "Why was event sourcing rejected for the inventory service?",
+      "answer": "The movements table provides the audit trail without the projection-layer and schema-evolution tax at the current scale.",
+      "answer_keywords": [
+        "projection"
+      ],
+      "source_message_ids": [
+        7
+      ],
+      "segment": 2
+    },
+    {
+      "id": "Q5",
+      "question": "How is current stock computed after the redesign?",
+      "answer": "As SUM(delta) over the inventory_movements table.",
+      "answer_keywords": [
+        "sum"
+      ],
+      "source_message_ids": [
+        9,
+        10
+      ],
+      "segment": 2
+    },
+    {
+      "id": "Q6",
+      "question": "What were the latency numbers before and after the invoice fix, and was the change accepted?",
+      "answer": "p95 rose from 12ms to 34ms due to lock serialization; it was accepted.",
+      "answer_keywords": [
+        "12ms",
+        "34ms"
+      ],
+      "source_message_ids": [
+        14,
+        15
+      ],
+      "segment": 5
+    },
+    {
+      "id": "Q7",
+      "question": "What three things are alerted on for the invoice path?",
+      "answer": "Lock wait over 100ms, duplicate-number canary, replication lag over 5 seconds.",
+      "answer_keywords": [
+        "lock",
+        "replication"
+      ],
+      "source_message_ids": [
+        19
+      ],
+      "segment": 2
+    },
+    {
+      "id": "Q8",
+      "question": "What pattern hides replica lag on confirmation reads?",
+      "answer": "Read-your-writes: route a user's own reads to the primary for about 5 seconds after their write.",
+      "answer_keywords": [
+        "read-your-writes"
+      ],
+      "source_message_ids": [
+        17
+      ],
+      "segment": 2
+    },
+    {
+      "id": "Q9",
+      "question": "What should on-call engineers check before escalating invoice latency, per the runbook note?",
+      "answer": "The lock-wait alert on invoice_counters; p95 up to about 35ms is expected.",
+      "answer_keywords": [
+        "lock"
+      ],
+      "source_message_ids": [
+        25
+      ],
+      "segment": 7
+    },
+    {
+      "id": "Q10",
+      "question": "What dead code cleanup was filed at the end of the session?",
+      "answer": "Delete the old SELECT MAX code path so the race cannot be reintroduced.",
+      "answer_keywords": [
+        "select max"
+      ],
+      "source_message_ids": [
+        27
+      ],
+      "segment": 7
+    }
+  ]
+}

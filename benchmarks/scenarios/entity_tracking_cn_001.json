@@ -1,0 +1,63 @@
+{
+  "id": "entity_tracking_cn_001",
+  "category": "entity_tracking",
+  "description": "网关配置治理会话，多个实体在会话中多次变更：限流阈值 100→400→200、负责人 张伟→李娜→陈晨、灰度 5%→50%→全量、服务更名 order-service→order-core。探针全部问『现在的最新值』，专门考察摘要是否携带过期值（八段式第 6/8 段）。",
+  "target_segments": [6, 8],
+  "tools": [],
+  "transcript": [
+    {"role": "user", "content": "我们把网关的限流配置过一遍。现在的默认限流是多少来着？"},
+    {"role": "assistant", "content": "当前网关默认限流是每分钟 100 次请求，这是去年定的基线。"},
+    {"role": "user", "content": "100 太紧了，营销活动期间老是触发限流，先提到 400。"},
+    {"role": "assistant", "content": "已把限流阈值从每分钟 100 次调整为 400 次。注意 400 是活动期的临时值，活动结束后我们再评估。"},
+    {"role": "user", "content": "好。另外这个网关的负责人是不是要换了？张伟下个月转岗。"},
+    {"role": "assistant", "content": "是的，张伟是现任负责人。他转岗后建议李娜接手，她对网关的限流和路由模块都熟。"},
+    {"role": "user", "content": "就李娜吧，让她下周开始交接。"},
+    {"role": "assistant", "content": "好，负责人从张伟交接给李娜，下周开始。交接内容包括限流配置、路由表和证书轮换流程。"},
+    {"role": "user", "content": "说回限流，400 用了两周，正常业务期也经常打满，是不是该定个长期值？"},
+    {"role": "assistant", "content": "数据看，正常业务峰值在每分钟 180 次左右，活动期峰值能到 500。建议长期值定在 200：正常期有余量，活动期靠临时升降级兜底。"},
+    {"role": "user", "content": "200 合理，就定 200。"},
+    {"role": "assistant", "content": "已更新：限流阈值最终定为每分钟 200 次，经历了 100 到 400 再到 200 的三轮调整。"},
+    {"role": "user", "content": "灰度这块呢？上次说网关新路由是灰度 5% 在跑？"},
+    {"role": "assistant", "content": "是的，新路由目前灰度 5%。错误率稳定，建议提到 50%。"},
+    {"role": "user", "content": "提到 50%。"},
+    {"role": "assistant", "content": "灰度已从 5% 提到 50%。观察两天无异常就全量。"},
+    {"role": "user", "content": "两天过了，没异常吧？"},
+    {"role": "assistant", "content": "无异常，错误率与旧路由持平。可以全量。"},
+    {"role": "user", "content": "全量吧。"},
+    {"role": "assistant", "content": "新路由已 100% 全量，旧路由配置保留一周用于回滚。"},
+    {"role": "user", "content": "好。对了，服务本身是不是要改名？order-service 这个名字和现在的职责对不上了。"},
+    {"role": "assistant", "content": "是的，它现在同时管订单和履约，建议更名为 order-core，语义更准确。"},
+    {"role": "user", "content": "就改 order-core。"},
+    {"role": "assistant", "content": "服务已从 order-service 更名为 order-core，DNS 和发布管道同步更新完毕。"},
+    {"role": "user", "content": "李娜那边交接完了吗？"},
+    {"role": "assistant", "content": "李娜已完成交接，但她下周休产假，负责人再交接给陈晨，交接文档我周五前更新。"},
+    {"role": "user", "content": "好，那就陈晨。把当前的最终状态汇总一下。"},
+    {"role": "assistant", "content": "当前最终状态：限流阈值每分钟 200 次；网关负责人陈晨，经历了张伟、李娜到陈晨的交接；新路由 100% 全量；服务名 order-core。"}
+  ],
+  "facts": [
+    {"id": "F1", "text": "限流阈值最终定为每分钟 200 次，经历了 100 到 400 再到 200 的三轮调整。", "message_ids": [11, 27], "segment": 8},
+    {"id": "F2", "text": "网关现任负责人是陈晨，经历了张伟、李娜到陈晨的交接。", "message_ids": [25, 27], "segment": 8},
+    {"id": "F3", "text": "新路由已 100% 全量，旧路由配置保留一周用于回滚。", "message_ids": [19], "segment": 8},
+    {"id": "F4", "text": "服务从 order-service 更名为 order-core。", "message_ids": [23, 27], "segment": 8},
+    {"id": "F5", "text": "正常业务峰值约每分钟 180 次，活动期峰值能到 500。", "message_ids": [9], "segment": 2},
+    {"id": "F6", "text": "陈晨的交接文档周五前更新。", "message_ids": [25], "segment": 7},
+    {"id": "F7", "text": "400 是活动期的临时限流值，不是长期值。", "message_ids": [3], "segment": 6}
+  ],
+  "entities": [
+    {"name": "rate_limit", "value": "每分钟 200 次", "message_ids": [11], "aliases": ["200"]},
+    {"name": "owner", "value": "陈晨", "message_ids": [25], "aliases": ["陈晨"]},
+    {"name": "rollout", "value": "100% 全量", "message_ids": [19], "aliases": ["全量"]},
+    {"name": "service_name", "value": "order-core", "message_ids": [23], "aliases": ["order-core"]},
+    {"name": "peak_traffic", "value": "每分钟 180 次", "message_ids": [9], "aliases": ["180"]}
+  ],
+  "qa_probes": [
+    {"id": "Q1", "question": "网关限流阈值现在的最终值是每分钟多少次？", "answer": "每分钟 200 次。", "answer_keywords": ["200"], "source_message_ids": [11, 27], "segment": 8},
+    {"id": "Q2", "question": "网关现在的负责人是谁？", "answer": "陈晨。", "answer_keywords": ["陈晨"], "source_message_ids": [25, 27], "segment": 8},
+    {"id": "Q3", "question": "新路由现在灰度到什么程度了？", "answer": "已 100% 全量。", "answer_keywords": ["全量"], "source_message_ids": [18, 19, 27], "segment": 8},
+    {"id": "Q4", "question": "服务现在的名字是什么？", "answer": "order-core。", "answer_keywords": ["order-core"], "source_message_ids": [23, 27], "segment": 8},
+    {"id": "Q5", "question": "正常业务的峰值流量大约是每分钟多少次？", "answer": "约 180 次。", "answer_keywords": ["180"], "source_message_ids": [9], "segment": 2},
+    {"id": "Q6", "question": "交接文档什么时候更新完？", "answer": "周五前。", "answer_keywords": ["周五"], "source_message_ids": [25], "segment": 7},
+    {"id": "Q7", "question": "限流阈值中间临时调到过每分钟多少次？", "answer": "400 次。", "answer_keywords": ["400"], "source_message_ids": [2, 3], "segment": 6},
+    {"id": "Q8", "question": "旧路由配置保留多久用于回滚？", "answer": "保留一周。", "answer_keywords": ["一周"], "source_message_ids": [19], "segment": 8}
+  ]
+}

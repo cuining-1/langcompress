@@ -1,0 +1,70 @@
+{
+  "id": "tool_json_heavy_cn_001",
+  "category": "tool_json_heavy",
+  "description": "电商客服会话，由返回大型中文 JSON 的工具调用驱动（订单列表、客户档案、SLA 事件）。考察压缩大体积工具输出时关键数字与单号能否幸存（八段式第 2/3/8 段）。",
+  "target_segments": [2, 3, 8],
+  "tools": [
+    {"name": "query_orders", "description": "按账号或订单号查询订单记录，可选日期范围或记录类型。"},
+    {"name": "get_customer", "description": "按账号 ID 拉取完整客户档案。"}
+  ],
+  "transcript": [
+    {"role": "user", "content": "客户 C-2001 星辰贸易投诉说他们的周报金额不对，能拉一下他们最近的订单吗？"},
+    {"role": "assistant", "content": "我来查他们最近的订单。", "tool_calls": [{"name": "query_orders", "args": {"account_id": "C-2001", "limit": 20}, "id": "c1"}]},
+    {"role": "tool", "tool_call_id": "c1", "name": "query_orders", "content": "{\"account_id\": \"C-2001\", \"period\": \"2026-08-19/2026-08-26\", \"count\": 6, \"gross_cny\": 18442.50, \"net_cny\": 17192.50, \"orders\": [{\"order_id\": \"ord_88012\", \"date\": \"2026-08-21\", \"amount_cny\": 1250.00, \"status\": \"refunded\", \"channel\": \"web\", \"items_count\": 3, \"discount_code\": \"BRIGHT10\", \"shipping_city\": \"上海\"}, {\"order_id\": \"ord_88013\", \"date\": \"2026-08-21\", \"amount_cny\": 2890.75, \"status\": \"delivered\", \"channel\": \"web\", \"items_count\": 12, \"discount_code\": null, \"shipping_city\": \"上海\"}, {\"order_id\": \"ord_88014\", \"date\": \"2026-08-22\", \"amount_cny\": 780.00, \"status\": \"delivered\", \"channel\": \"retail\", \"items_count\": 4, \"discount_code\": null, \"shipping_city\": \"上海\"}, {\"order_id\": \"ord_88015\", \"date\": \"2026-08-23\", \"amount_cny\": 4310.20, \"status\": \"delivered\", \"channel\": \"web\", \"items_count\": 19, \"discount_code\": \"BULK15\", \"shipping_city\": \"杭州\"}, {\"order_id\": \"ord_88018\", \"date\": \"2026-08-24\", \"amount_cny\": 5511.55, \"status\": \"delivered\", \"channel\": \"web\", \"items_count\": 22, \"discount_code\": null, \"shipping_city\": \"杭州\"}, {\"order_id\": \"ord_88019\", \"date\": \"2026-08-25\", \"amount_cny\": 3700.00, \"status\": \"pending\", \"channel\": \"web\", \"items_count\": 15, \"discount_code\": \"BRIGHT10\", \"shipping_city\": \"上海\"}], \"meta\": {\"currency\": \"CNY\", \"page\": 1, \"page_size\": 20, \"generated_at\": \"2026-08-26T09:12:03Z\"}}"},
+    {"role": "assistant", "content": "本期订单汇总：共 6 单，总额 18442.50 元，净额 17192.50 元。其中 ord_88019 还在待处理，ord_88012 已退款 1250.00 元。需要看客户档案吗？"},
+    {"role": "user", "content": "拉一下客户档案。"},
+    {"role": "assistant", "content": "查客户档案。", "tool_calls": [{"name": "get_customer", "args": {"customer_id": "C-2001"}, "id": "c2"}]},
+    {"role": "tool", "tool_call_id": "c2", "name": "get_customer", "content": "{\"customer_id\": \"C-2001\", \"name\": \"星辰贸易\", \"tier\": \"gold\", \"contact\": {\"name\": \"林晓雅\", \"email\": \"lin.xiaoya@xingchen.example\", \"phone\": \"+86-21-5555-0142\"}, \"billing_address\": {\"line1\": \"浦东新区世纪大道 1200 号\", \"city\": \"上海\"}, \"preferences\": {\"invoice_format\": \"csv\", \"currency\": \"CNY\", \"report_frequency\": \"weekly\", \"report_day\": \"tuesday\"}, \"accounts\": [{\"type\": \"retail\", \"id\": \"C-2001\"}, {\"type\": \"wholesale\", \"id\": \"C-2010\"}], \"created_at\": \"2021-04-17\", \"notes\": \"偏好上午电话联系。升级路径：林晓雅 -> 采购台。\"}"},
+    {"role": "assistant", "content": "客户档案：星辰贸易，gold 等级，联系人林晓雅，开票格式 csv，币种 CNY，周报每周二出。档案里还有一个批发账号 C-2010。档案本身没有异常。"},
+    {"role": "user", "content": "再对比一下上周的订单。"},
+    {"role": "assistant", "content": "拉上周订单对比。", "tool_calls": [{"name": "query_orders", "args": {"account_id": "C-2001", "since": "2026-08-12", "until": "2026-08-19"}, "id": "c3"}]},
+    {"role": "tool", "tool_call_id": "c3", "name": "query_orders", "content": "{\"account_id\": \"C-2001\", \"period\": \"2026-08-12/2026-08-19\", \"count\": 5, \"gross_cny\": 15978.25, \"net_cny\": 15978.25, \"orders\": [{\"order_id\": \"ord_84801\", \"date\": \"2026-08-12\", \"amount_cny\": 2210.00, \"status\": \"delivered\", \"channel\": \"web\", \"items_count\": 9, \"shipping_city\": \"上海\"}, {\"order_id\": \"ord_84809\", \"date\": \"2026-08-13\", \"amount_cny\": 3320.50, \"status\": \"delivered\", \"channel\": \"web\", \"items_count\": 14, \"shipping_city\": \"上海\"}, {\"order_id\": \"ord_84815\", \"date\": \"2026-08-15\", \"amount_cny\": 640.75, \"status\": \"delivered\", \"channel\": \"retail\", \"items_count\": 3, \"shipping_city\": \"上海\"}, {\"order_id\": \"ord_84820\", \"date\": \"2026-08-17\", \"amount_cny\": 4780.00, \"status\": \"delivered\", \"channel\": \"web\", \"items_count\": 21, \"shipping_city\": \"杭州\"}, {\"order_id\": \"ord_84827\", \"date\": \"2026-08-18\", \"amount_cny\": 5027.00, \"status\": \"delivered\", \"channel\": \"web\", \"items_count\": 18, \"shipping_city\": \"杭州\"}], \"meta\": {\"currency\": \"CNY\", \"generated_at\": \"2026-08-26T09:14:41Z\"}}"},
+    {"role": "assistant", "content": "上周 5 单共 15978.25 元，全部发货，无退款。本周 6 单总额 18442.50 元，含一笔 1250.00 元退款，净额 17192.50 元，环比净增长约 7.6%。周报金额不对的原因很可能是报表显示的是总额，没有扣除退款。"},
+    {"role": "user", "content": "对上了，他们报表显示的就是总额。拉一下退款单 ord_88012 的详情。"},
+    {"role": "assistant", "content": "查退款单详情。", "tool_calls": [{"name": "query_orders", "args": {"order_id": "ord_88012"}, "id": "c4"}]},
+    {"role": "tool", "tool_call_id": "c4", "name": "query_orders", "content": "{\"order_id\": \"ord_88012\", \"account_id\": \"C-2001\", \"date\": \"2026-08-21\", \"status\": \"refunded\", \"channel\": \"web\", \"items\": [{\"sku\": \"XC-LAMP-02\", \"name\": \"海港台灯\", \"qty\": 1, \"unit_price_cny\": 420.00}, {\"sku\": \"XC-CHAIR-11\", \"name\": \"海港餐椅\", \"qty\": 2, \"unit_price_cny\": 415.00}], \"subtotal_cny\": 1250.00, \"tax_cny\": 0.00, \"discount_code\": \"BRIGHT10\", \"refund\": {\"amount_cny\": 1250.00, \"reason\": \"damaged_in_transit\", \"reason_cn\": \"运输破损\", \"processed_by\": \"auto_policy\", \"date\": \"2026-08-21\", \"refund_id\": \"rfnd_99120\"}, \"shipping\": {\"city\": \"上海\", \"carrier\": \"顺丰冷链\", \"tracking\": \"SF-88120-3\"}}"},
+    {"role": "assistant", "content": "订单 ord_88012：一台海港台灯加两把海港餐椅，1250.00 元因运输破损当天自动退款（退款单号 rfnd_99120）。退款本身合规，报表只需要加一行净额。"},
+    {"role": "user", "content": "明白了。他们这个月有没有 SLA 违约事件？"},
+    {"role": "assistant", "content": "查 SLA 事件。", "tool_calls": [{"name": "query_orders", "args": {"account_id": "C-2001", "kind": "sla_events"}, "id": "c5"}]},
+    {"role": "tool", "tool_call_id": "c5", "name": "query_orders", "content": "{\"account_id\": \"C-2001\", \"month\": \"2026-08\", \"sla_events\": [{\"id\": \"sla-2026-08-114\", \"type\": \"response_time_breach\", \"severity\": \"medium\", \"date\": \"2026-08-14\", \"minutes_over\": 42, \"ticket\": \"TCK-4412\"}, {\"id\": \"sla-2026-08-190\", \"type\": \"resolution_time_breach\", \"severity\": \"low\", \"date\": \"2026-08-19\", \"minutes_over\": 130, \"ticket\": \"TCK-4419\"}], \"credits_owed_cny\": 0.00, \"tier_policy\": {\"tier\": \"gold\", \"response_target_minutes\": 60, \"resolution_target_minutes\": 480, \"breach_credits\": \"仅高严重度违约才赔付\"}}"},
+    {"role": "assistant", "content": "本月两条 SLA 事件：一条响应超时超目标 42 分钟（TCK-4412，中等严重度），一条解决超时超 130 分钟（TCK-4419，低严重度）。gold 等级只有高严重度违约才赔付，所以应赔金额为 0。"},
+    {"role": "user", "content": "好。跟我说说怎么回复客户。"},
+    {"role": "assistant", "content": "跟星辰贸易这样回复：金额按总额口径没有算错；ord_88012 的 1250.00 元退款（运输破损）没有在周报里扣除，所以净额是 17192.50 元，环比增长约 7.6%；两条 SLA 违约在 gold 等级容忍范围内，无赔付。我们会给周报加净额一列。"},
+    {"role": "user", "content": "再帮我看一下他们的批发账号 C-2010。"},
+    {"role": "assistant", "content": "查批发账号订单。", "tool_calls": [{"name": "query_orders", "args": {"account_id": "C-2010", "limit": 20}, "id": "c6"}]},
+    {"role": "tool", "tool_call_id": "c6", "name": "query_orders", "content": "{\"account_id\": \"C-2010\", \"period\": \"2026-08-19/2026-08-26\", \"count\": 3, \"gross_cny\": 6730.00, \"net_cny\": 5980.00, \"orders\": [{\"order_id\": \"ord_90101\", \"date\": \"2026-08-20\", \"amount_cny\": 2410.00, \"status\": \"delivered\", \"channel\": \"wholesale_portal\", \"items_count\": 48}, {\"order_id\": \"ord_90103\", \"date\": \"2026-08-22\", \"amount_cny\": 750.00, \"status\": \"cancelled\", \"channel\": \"wholesale_portal\", \"items_count\": 15}, {\"order_id\": \"ord_90106\", \"date\": \"2026-08-24\", \"amount_cny\": 3570.00, \"status\": \"delivered\", \"channel\": \"phone\", \"items_count\": 60}], \"meta\": {\"currency\": \"CNY\", \"generated_at\": \"2026-08-26T09:31:10Z\"}}"},
+    {"role": "assistant", "content": "星辰批发（C-2010）：本期 3 单，总额 6730.00 元，取消一单 ord_90103（750.00 元），净额 5980.00 元。周报的总额与净额口径问题同样存在。"},
+    {"role": "user", "content": "谢谢。给报表本身提个修复方案吧。"},
+    {"role": "assistant", "content": "报表修复方案：周报增加 net_total 列（总额减退款减取消），默认沿用现在的总额口径，用开关控制。以星辰贸易工单作为触发案例。"}
+  ],
+  "facts": [
+    {"id": "F1", "text": "星辰贸易（C-2001）是 gold 等级客户，联系人是林晓雅。", "message_ids": [6, 7], "segment": 8},
+    {"id": "F2", "text": "本期星辰贸易共 6 单，总额 18442.50 元，净额 17192.50 元。", "message_ids": [2, 3], "segment": 3},
+    {"id": "F3", "text": "订单 ord_88012 因运输破损退款 1250.00 元，退款单号 rfnd_99120。", "message_ids": [14, 15], "segment": 4},
+    {"id": "F4", "text": "上周 5 单共 15978.25 元无退款，本周净额环比增长约 7.6%。", "message_ids": [10, 11], "segment": 3},
+    {"id": "F5", "text": "本月两条 SLA 事件：响应超时 42 分钟（TCK-4412）、解决超时 130 分钟（TCK-4419），gold 等级应赔金额为 0。", "message_ids": [18, 19], "segment": 4},
+    {"id": "F6", "text": "星辰批发（C-2010）本期 3 单，总额 6730.00 元，取消一单后净额 5980.00 元。", "message_ids": [24, 25], "segment": 3},
+    {"id": "F7", "text": "周报金额投诉的根因是报表显示总额、未扣除退款。", "message_ids": [11, 21], "segment": 5},
+    {"id": "F8", "text": "报表修复方案：增加 net_total 列（总额减退款减取消），开关控制。", "message_ids": [27], "segment": 7}
+  ],
+  "entities": [
+    {"name": "customer_account", "value": "C-2001（星辰贸易）", "message_ids": [0], "aliases": ["C-2001"]},
+    {"name": "sister_account", "value": "C-2010（星辰批发）", "message_ids": [22], "aliases": ["C-2010"]},
+    {"name": "customer_tier", "value": "gold", "message_ids": [6], "aliases": ["gold"]},
+    {"name": "contact", "value": "林晓雅", "message_ids": [6], "aliases": ["林晓雅"]},
+    {"name": "refunded_order", "value": "ord_88012", "message_ids": [14], "aliases": ["ord_88012"]},
+    {"name": "refund_amount", "value": "1250.00 元", "message_ids": [14], "aliases": ["1250.00"]},
+    {"name": "net_weekly_total", "value": "17192.50 元", "message_ids": [11], "aliases": ["17192.50"]},
+    {"name": "cancelled_order", "value": "ord_90103", "message_ids": [24], "aliases": ["ord_90103"]}
+  ],
+  "qa_probes": [
+    {"id": "Q1", "question": "订单 ord_88012 退了多少钱，什么原因？", "answer": "1250.00 元，运输破损。", "answer_keywords": ["1250.00", "运输破损"], "source_message_ids": [14, 15], "segment": 4},
+    {"id": "Q2", "question": "星辰贸易本周的净额是多少？", "answer": "17192.50 元。", "answer_keywords": ["17192.50"], "source_message_ids": [3, 11], "segment": 3},
+    {"id": "Q3", "question": "客户 C-2001 的联系人是谁？", "answer": "林晓雅。", "answer_keywords": ["林晓雅"], "source_message_ids": [6, 7], "segment": 8},
+    {"id": "Q4", "question": "星辰贸易是什么等级，SLA 违约要赔钱吗？", "answer": "gold 等级，应赔金额为 0。", "answer_keywords": ["gold", "应赔金额为 0"], "source_message_ids": [6, 19], "segment": 8},
+    {"id": "Q5", "question": "上周和本周的订单总数和总额分别是多少？", "answer": "上周 5 单共 15978.25 元，本周 6 单共 18442.50 元。", "answer_keywords": ["15978.25", "18442.50"], "source_message_ids": [2, 3, 10, 11], "segment": 3},
+    {"id": "Q6", "question": "星辰批发取消了哪个订单，净额是多少？", "answer": "ord_90103 被取消，净额 5980.00 元。", "answer_keywords": ["ord_90103", "5980.00"], "source_message_ids": [24, 25], "segment": 3},
+    {"id": "Q7", "question": "报表的修复方案是什么？", "answer": "增加 net_total 列（总额减退款减取消），开关控制。", "answer_keywords": ["net_total"], "source_message_ids": [27], "segment": 7},
+    {"id": "Q8", "question": "客户的开票格式和币种是什么？", "answer": "csv 格式，CNY 币种。", "answer_keywords": ["csv", "CNY"], "source_message_ids": [6, 7], "segment": 8}
+  ]
+}

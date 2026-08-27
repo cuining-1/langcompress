@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.langcompress_cache/
+*.egg
+.python-version
+
+# Benchmark artifacts: LLM response cache, generated reports and full-text
+# dumps are run outputs (reproducible from the versioned corpus + settings
+# snapshot), not source data.
+benchmarks/cache/
+benchmarks/reports/
+benchmarks/dumps/
+
+# IDE / agent internal files (design doc now lives in docs/)
+.trae/
+.vscode/
+.idea/
+

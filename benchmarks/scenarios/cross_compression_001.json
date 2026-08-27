@@ -1,0 +1,604 @@
+{
+  "id": "cross_compression_001",
+  "category": "cross_compression",
+  "description": "A four-week service migration (billing-api from Node/Express on EC2 to Python/FastAPI on ECS Fargate) spanning scoping, implementation, testing, cutover, and close-out. Long enough to cross two compression points, stressing chained summaries: week-1 facts must survive the second summarization (segments 1, 7, 2, 6).",
+  "target_segments": [
+    1,
+    7,
+    2,
+    6
+  ],
+  "tools": [],
+  "transcript": [
+    {
+      "role": "user",
+      "content": "We're migrating billing-api from Node/Express on EC2 to Python. Scope: 14 endpoints, JWT auth, Stripe webhooks. Where do we start?"
+    },
+    {
+      "role": "assistant",
+      "content": "Start with an endpoint inventory and risk ranking. For 14 endpoints I'd rank the Stripe webhook and charge endpoints P0 (money movement), auth and session endpoints P1, and the reporting endpoints P2. Port P0 first behind a feature flag with dual-write, so you can reconcile before cutover. What target framework are you thinking?"
+    },
+    {
+      "role": "user",
+      "content": "Inventory done: 14 endpoints, 3 P0 (webhooks, charges, refunds), 4 P1 (auth, sessions), 7 P2 (reporting)."
+    },
+    {
+      "role": "assistant",
+      "content": "With that inventory the plan holds: P0 first with dual-write to a shadow ledger, then P1, then P2 mechanically. Target framework and runtime?"
+    },
+    {
+      "role": "user",
+      "content": "FastAPI on ECS Fargate. We standardize on Poetry for dependencies."
+    },
+    {
+      "role": "assistant",
+      "content": "FastAPI on Fargate with Poetry is a solid stack. I'd run 2 uvicorn workers per task and async SQLAlchemy against the existing Postgres. What Postgres is it, by the way?"
+    },
+    {
+      "role": "user",
+      "content": "Standard RDS Postgres 14, not Aurora. And keep JWT but move it to RS256 keys."
+    },
+    {
+      "role": "assistant",
+      "content": "RS256 with rotating keypairs served from a JWKS endpoint is a good security upgrade over HS256. Combined with the dual-write shadow ledger for the money paths, the risk profile looks right. What's the timeline?"
+    },
+    {
+      "role": "user",
+      "content": "Four weeks: week 1 P0, week 2 P1 and P2, week 3 testing plus shadow traffic, week 4 cutover."
+    },
+    {
+      "role": "assistant",
+      "content": "Four-week timeline noted. Week 1 then is webhooks, charges, and refunds with dual-write. Define the shadow ledger schema when you get there and we'll review it."
+    },
+    {
+      "role": "user",
+      "content": "Week 1 done. Shadow ledger schema: table shadow_ledger with columns id, event_id, source, amount_cents, currency, created_at, and a reconciled boolean."
+    },
+    {
+      "role": "assistant",
+      "content": "That schema works. Add a unique index on event_id for idempotency, and reconcile with an hourly job comparing the shadow ledger against Stripe balance transactions."
+    },
+    {
+      "role": "user",
+      "content": "Reconciliation job runs hourly. First 24 hours showed 3 mismatches, all caused by timezone drift in created_at, UTC versus local."
+    },
+    {
+      "role": "assistant",
+      "content": "Classic drift. Pin every timestamp to UTC at the boundary, meaning in the webhook handler entry, and store timestamptz. That mismatch class disappears once ingestion is pinned."
+    },
+    {
+      "role": "user",
+      "content": "Fixed. created_at is now timestamptz with UTC pinned at ingestion. Zero mismatches over the following 48 hours."
+    },
+    {
+      "role": "assistant",
+      "content": "Zero mismatches over 48 hours is the signal to widen. Move to 10 percent shadow traffic on charges next, and watch the p99 latency delta between the runtimes."
+    },
+    {
+      "role": "user",
+      "content": "At 10 percent shadow, p99 on FastAPI is 41ms versus 58ms on Node. Memory per task: 256MB versus 390MB."
+    },
+    {
+      "role": "assistant",
+      "content": "FastAPI is winning on both p99, down 29 percent, and memory, down 34 percent. Widen to 50 percent shadow. Any error-rate difference so far?"
+    },
+    {
+      "role": "user",
+      "content": "Error rates are identical: 0.12 percent on both sides, all pre-existing validation errors."
+    },
+    {
+      "role": "assistant",
+      "content": "Identical error rates means parity is achieved for P0. Lock the week-1 scope and move to the P1 auth work next."
+    },
+    {
+      "role": "user",
+      "content": "Week 2: auth ported to RS256 with the JWKS endpoint at /auth/jwks. Sessions moved to Redis with a 15-minute TTL."
+    },
+    {
+      "role": "assistant",
+      "content": "RS256 with JWKS at /auth/jwks and Redis sessions on a 15-minute TTL is noted. What key rotation cadence are you planning?"
+    },
+    {
+      "role": "user",
+      "content": "Keys rotate every 30 days, and old keys stay valid for 24 hours of overlap."
+    },
+    {
+      "role": "assistant",
+      "content": "A 30-day rotation with a 24-hour overlap window is safe. The P2 reporting endpoints can port mechanically after that."
+    },
+    {
+      "role": "user",
+      "content": "P2 done: 7 reporting endpoints ported, all read-only, and moved to the read replica to cut primary load."
+    },
+    {
+      "role": "assistant",
+      "content": "Read replica for reporting is the right call. That completes week 2. Week 3 is testing plus full shadow. What's the test coverage on the new service?"
+    },
+    {
+      "role": "user",
+      "content": "Coverage on the new service: 87 percent unit, contract tests for all 14 endpoints via Pact, and a load test planned at 2x peak."
+    },
+    {
+      "role": "assistant",
+      "content": "87 percent unit plus Pact contracts plus a 2x-peak load test is thorough. During the load test, watch the Stripe webhook retry path under saturation. That's where idempotency bugs hide."
+    },
+    {
+      "role": "user",
+      "content": "Load test done at 2x peak, 4,000 rps: p99 46ms, and zero webhook duplicates thanks to the event_id unique index."
+    },
+    {
+      "role": "assistant",
+      "content": "2x peak passed with zero duplicate webhooks. The migration is technically proven. Week 4 is the cutover plan."
+    },
+    {
+      "role": "user",
+      "content": "Cutover plan: DNS weighted flip 5, 25, 50, then 100 percent over 3 days. Rollback is flipping the weights back. Keep dual-write for 7 days after cutover."
+    },
+    {
+      "role": "assistant",
+      "content": "A weighted flip with instant rollback and a 7-day dual-write tail is a textbook cutover. Anything still unresolved?"
+    },
+    {
+      "role": "user",
+      "content": "Two open items: the on-call runbook for the new service, and Stripe key housekeeping. We should rotate the restricted key used by webhooks."
+    },
+    {
+      "role": "assistant",
+      "content": "Rotate the webhook restricted key during the 25 percent stage, when traffic is low and validation is easy. Deliver the runbook before you go to 100 percent. Who owns each item?"
+    },
+    {
+      "role": "user",
+      "content": "Runbook: Fatima. Key rotation: me, Tomas."
+    },
+    {
+      "role": "assistant",
+      "content": "Owners noted: Fatima on the runbook, Tomas on the key rotation. What are the cutover dates?"
+    },
+    {
+      "role": "user",
+      "content": "Cutover starts Monday June 8th, and we're at 100 percent by Thursday June 11th."
+    },
+    {
+      "role": "assistant",
+      "content": "June 8 through 11 for the cutover. One more thing to verify: pin the Postgres driver in Poetry so the ECS tasks are deterministic. What's the driver decision?"
+    },
+    {
+      "role": "user",
+      "content": "Driver pinned: psycopg 3.1 as primary, with asyncpg as fallback. Postgres 14 confirmed."
+    },
+    {
+      "role": "assistant",
+      "content": "psycopg 3.1 primary with asyncpg fallback on Postgres 14. The dependency story is complete. I think we're ready for Monday."
+    },
+    {
+      "role": "user",
+      "content": "During cutover day 1 at 5 percent, one alert fired: webhook latency p99 spiked to 900ms for 4 minutes. What's the likely root cause?"
+    },
+    {
+      "role": "assistant",
+      "content": "A 4-minute p99 spike at 5 percent traffic on day 1 suggests an ECS scale-out event: cold tasks receiving traffic before they were warm, while the ALB still routed to them. Check the service's task count in that window."
+    },
+    {
+      "role": "user",
+      "content": "Confirmed, it was a scale-out event. Cold tasks received traffic before warm. Fixed by adding a 30-second target registration delay and a warmup health check."
+    },
+    {
+      "role": "assistant",
+      "content": "Registration delay plus warmup health check is the standard fix. That spike class is eliminated. Continue the ramp."
+    },
+    {
+      "role": "user",
+      "content": "Day 2 at 25 percent: clean, and the key rotation is done. Day 3 at 50 percent: clean."
+    },
+    {
+      "role": "assistant",
+      "content": "Key rotation completed mid-ramp exactly as planned. Proceed to 100 percent."
+    },
+    {
+      "role": "user",
+      "content": "We've been at 100 percent since Thursday morning. Zero incidents in 24 hours. Dual-write is still on."
+    },
+    {
+      "role": "assistant",
+      "content": "Congratulations. The Node runtime can be decommissioned once the 7-day dual-write tail ends, which lands on June 18th. Schedule the decommission."
+    },
+    {
+      "role": "user",
+      "content": "Decommission scheduled for June 18th: the EC2 instances and the old ALB go."
+    },
+    {
+      "role": "assistant",
+      "content": "Decommission June 18th covering the EC2 instances and the old ALB. Final checklist items: the runbook was to be delivered before 100 percent, and a post-cutover metrics review. Status?"
+    },
+    {
+      "role": "user",
+      "content": "Runbook was delivered by Fatima yesterday. Metrics review is booked for June 15th with the team."
+    },
+    {
+      "role": "assistant",
+      "content": "Runbook delivered and metrics review on June 15th. The migration is effectively complete. Anything for the retro?"
+    },
+    {
+      "role": "user",
+      "content": "Retro action: adopt the dual-write plus shadow-ledger pattern as the standard playbook for future service migrations."
+    },
+    {
+      "role": "assistant",
+      "content": "Adopting dual-write with a shadow ledger as the standard migration playbook is the right lesson to keep. Anything else?"
+    },
+    {
+      "role": "user",
+      "content": "One last audit question: what were the final p99 and memory numbers, and the zero-mismatch criterion?"
+    },
+    {
+      "role": "assistant",
+      "content": "Final numbers: p99 of 41ms at 10 percent shadow versus 58ms on Node, and 46ms at 2x peak load; memory 256MB per task versus 390MB; zero ledger mismatches over 48 hours after the UTC timestamptz fix, and zero webhook duplicates at 2x peak thanks to the event_id unique index."
+    },
+    {
+      "role": "user",
+      "content": "Great. Close the migration epic."
+    },
+    {
+      "role": "assistant",
+      "content": "Migration epic closed: billing-api now runs FastAPI on ECS Fargate with psycopg 3.1, RS256 auth, Redis sessions, and read-replica reporting. Cutover was June 8 to 11, decommission lands June 18th."
+    }
+  ],
+  "facts": [
+    {
+      "id": "F1",
+      "text": "billing-api has 14 endpoints: 3 P0 (webhooks, charges, refunds), 4 P1 (auth, sessions), 7 P2 (reporting).",
+      "message_ids": [
+        2
+      ],
+      "segment": 1
+    },
+    {
+      "id": "F2",
+      "text": "Target stack: FastAPI on ECS Fargate, Poetry, async SQLAlchemy, existing RDS Postgres 14.",
+      "message_ids": [
+        4,
+        5,
+        6
+      ],
+      "segment": 2
+    },
+    {
+      "id": "F3",
+      "text": "JWT auth moved from HS256 to RS256 with a JWKS endpoint at /auth/jwks; keys rotate every 30 days with a 24-hour overlap.",
+      "message_ids": [
+        6,
+        20,
+        22
+      ],
+      "segment": 2
+    },
+    {
+      "id": "F4",
+      "text": "A dual-write shadow ledger (table shadow_ledger) with a unique index on event_id reconciles P0 money paths against Stripe balance transactions hourly.",
+      "message_ids": [
+        10,
+        11
+      ],
+      "segment": 2
+    },
+    {
+      "id": "F5",
+      "text": "Early reconciliation mismatches were timezone drift in created_at (UTC vs local); fixed by pinning UTC at ingestion with timestamptz, giving zero mismatches over 48 hours.",
+      "message_ids": [
+        12,
+        13,
+        14
+      ],
+      "segment": 4
+    },
+    {
+      "id": "F6",
+      "text": "At 10 percent shadow traffic: p99 41ms on FastAPI versus 58ms on Node; memory 256MB versus 390MB per task.",
+      "message_ids": [
+        16
+      ],
+      "segment": 2
+    },
+    {
+      "id": "F7",
+      "text": "Sessions moved to Redis with a 15-minute TTL.",
+      "message_ids": [
+        20
+      ],
+      "segment": 2
+    },
+    {
+      "id": "F8",
+      "text": "The 7 reporting endpoints were ported read-only and moved to the read replica to cut primary load.",
+      "message_ids": [
+        24
+      ],
+      "segment": 2
+    },
+    {
+      "id": "F9",
+      "text": "Test coverage: 87 percent unit, Pact contract tests for all 14 endpoints, load test at 2x peak (4,000 rps) with p99 46ms and zero webhook duplicates.",
+      "message_ids": [
+        26,
+        28
+      ],
+      "segment": 2
+    },
+    {
+      "id": "F10",
+      "text": "Cutover: DNS weighted flip 5 to 25 to 50 to 100 percent over June 8-11, rollback by flipping weights back, dual-write kept 7 days post-cutover.",
+      "message_ids": [
+        30,
+        36
+      ],
+      "segment": 2
+    },
+    {
+      "id": "F11",
+      "text": "The day-1 webhook p99 spike (900ms for 4 minutes) was ECS cold tasks receiving traffic during scale-out; fixed with a 30-second target registration delay and a warmup health check.",
+      "message_ids": [
+        40,
+        41,
+        42
+      ],
+      "segment": 4
+    },
+    {
+      "id": "F12",
+      "text": "The Stripe webhook restricted key was rotated during the 25 percent stage.",
+      "message_ids": [
+        32,
+        44
+      ],
+      "segment": 2
+    },
+    {
+      "id": "F13",
+      "text": "Owners: Fatima owns the runbook, Tomas owns the key rotation.",
+      "message_ids": [
+        34
+      ],
+      "segment": 8
+    },
+    {
+      "id": "F14",
+      "text": "Decommission of the old runtime is scheduled June 18th (EC2 instances plus old ALB); metrics review June 15th; runbook delivered by Fatima.",
+      "message_ids": [
+        47,
+        48,
+        50
+      ],
+      "segment": 7
+    },
+    {
+      "id": "F15",
+      "text": "Retro action: adopt dual-write plus shadow-ledger as the standard playbook for future migrations.",
+      "message_ids": [
+        52
+      ],
+      "segment": 5
+    },
+    {
+      "id": "F16",
+      "text": "The pinned Postgres driver is psycopg 3.1 with asyncpg fallback.",
+      "message_ids": [
+        38
+      ],
+      "segment": 2
+    }
+  ],
+  "entities": [
+    {
+      "name": "service",
+      "value": "billing-api",
+      "message_ids": [
+        0
+      ]
+    },
+    {
+      "name": "target_stack",
+      "value": "FastAPI on ECS Fargate",
+      "message_ids": [
+        4
+      ]
+    },
+    {
+      "name": "database",
+      "value": "RDS Postgres 14",
+      "message_ids": [
+        6
+      ]
+    },
+    {
+      "name": "auth_scheme",
+      "value": "RS256 with JWKS at /auth/jwks",
+      "message_ids": [
+        6,
+        20
+      ]
+    },
+    {
+      "name": "session_store",
+      "value": "Redis, 15-minute TTL",
+      "message_ids": [
+        20
+      ]
+    },
+    {
+      "name": "shadow_ledger",
+      "value": "shadow_ledger table, unique index on event_id",
+      "message_ids": [
+        10,
+        11
+      ]
+    },
+    {
+      "name": "driver",
+      "value": "psycopg 3.1 (asyncpg fallback)",
+      "message_ids": [
+        38
+      ]
+    },
+    {
+      "name": "cutover_window",
+      "value": "June 8-11",
+      "message_ids": [
+        36
+      ]
+    },
+    {
+      "name": "decommission_date",
+      "value": "June 18th",
+      "message_ids": [
+        48
+      ]
+    },
+    {
+      "name": "runbook_owner",
+      "value": "Fatima",
+      "message_ids": [
+        34
+      ]
+    },
+    {
+      "name": "key_rotation_owner",
+      "value": "Tomas",
+      "message_ids": [
+        34
+      ]
+    }
+  ],
+  "qa_probes": [
+    {
+      "id": "Q1",
+      "question": "How many endpoints does billing-api have, and how were they prioritized?",
+      "answer": "14 endpoints: 3 P0 (webhooks, charges, refunds), 4 P1 (auth, sessions), 7 P2 (reporting).",
+      "answer_keywords": [
+        "14"
+      ],
+      "source_message_ids": [
+        2
+      ],
+      "segment": 1
+    },
+    {
+      "id": "Q2",
+      "question": "What database and ORM does the new service use?",
+      "answer": "RDS Postgres 14 with async SQLAlchemy.",
+      "answer_keywords": [
+        "postgres",
+        "sqlalchemy"
+      ],
+      "source_message_ids": [
+        5,
+        6
+      ],
+      "segment": 2
+    },
+    {
+      "id": "Q3",
+      "question": "How often do JWT keys rotate, and for how long do old keys stay valid?",
+      "answer": "Every 30 days, with 24 hours of overlap.",
+      "answer_keywords": [
+        "30",
+        "24"
+      ],
+      "source_message_ids": [
+        22
+      ],
+      "segment": 2
+    },
+    {
+      "id": "Q4",
+      "question": "What caused the early shadow-ledger mismatches, and how was it fixed?",
+      "answer": "Timezone drift in created_at; fixed by pinning UTC at ingestion with timestamptz.",
+      "answer_keywords": [
+        "timezone",
+        "utc"
+      ],
+      "source_message_ids": [
+        12,
+        13
+      ],
+      "segment": 4
+    },
+    {
+      "id": "Q5",
+      "question": "What were the p99 latency numbers comparing FastAPI and Node at 10 percent shadow traffic?",
+      "answer": "41ms on FastAPI versus 58ms on Node.",
+      "answer_keywords": [
+        "41ms",
+        "58ms"
+      ],
+      "source_message_ids": [
+        16
+      ],
+      "segment": 2
+    },
+    {
+      "id": "Q6",
+      "question": "What caused the day-1 p99 spike during cutover, and what fixed it?",
+      "answer": "ECS cold tasks receiving traffic during scale-out; fixed with a 30-second registration delay and warmup health check.",
+      "answer_keywords": [
+        "cold",
+        "registration"
+      ],
+      "source_message_ids": [
+        41,
+        42
+      ],
+      "segment": 4
+    },
+    {
+      "id": "Q7",
+      "question": "Who owns the runbook for the new service?",
+      "answer": "Fatima.",
+      "answer_keywords": [
+        "fatima"
+      ],
+      "source_message_ids": [
+        34
+      ],
+      "segment": 8
+    },
+    {
+      "id": "Q8",
+      "question": "When is the old Node runtime decommissioned?",
+      "answer": "June 18th, after the 7-day dual-write tail.",
+      "answer_keywords": [
+        "june 18"
+      ],
+      "source_message_ids": [
+        47,
+        48
+      ],
+      "segment": 7
+    },
+    {
+      "id": "Q9",
+      "question": "What was the retro action from this migration?",
+      "answer": "Adopt dual-write plus shadow-ledger as the standard migration playbook.",
+      "answer_keywords": [
+        "shadow",
+        "playbook"
+      ],
+      "source_message_ids": [
+        52
+      ],
+      "segment": 5
+    },
+    {
+      "id": "Q10",
+      "question": "What test coverage did the new service reach?",
+      "answer": "87 percent unit, Pact contracts for all 14 endpoints, 2x-peak load test.",
+      "answer_keywords": [
+        "87",
+        "pact"
+      ],
+      "source_message_ids": [
+        26
+      ],
+      "segment": 2
+    }
+  ]
+}

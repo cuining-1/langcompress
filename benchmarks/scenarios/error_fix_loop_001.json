@@ -1,0 +1,70 @@
+{
+  "id": "error_fix_loop_001",
+  "category": "error_fix_loop",
+  "description": "A coding-agent session with three error-fix cycles: reproduce a timeout, mis-fix it once (per-branch retry counters), hit a None-return edge, then land the correct fix. Stresses error history preservation so mistakes are not repeated (segments 4, 5).",
+  "target_segments": [4, 5, 2],
+  "tools": [
+    {"name": "run_tests", "description": "Run a subset of the test suite, optionally filtered by keyword."},
+    {"name": "read_file", "description": "Read a file slice by path and line range."}
+  ],
+  "transcript": [
+    {"role": "user", "content": "The CI is red: tests/test_metrics.py::test_export_metrics_times_out keeps failing with a timeout. Can you reproduce it locally?"},
+    {"role": "assistant", "content": "Reproducing the failing test locally.", "tool_calls": [{"name": "run_tests", "args": {"path": "tests/test_metrics.py", "keyword": "test_export_metrics"}, "id": "c1", "type": "tool_call"}]},
+    {"role": "tool", "tool_call_id": "c1", "name": "run_tests", "content": "============================= test session starts =============================\nplatform linux -- Python 3.12.4\ncollected 13 items\n\ntests/test_metrics.py .F                                         [100%]\n\nFAILED tests/test_metrics.py::test_export_metrics_times_out - TimeoutError: timed out after 10.0s\n=========================== 1 failed, 12 passed in 12.43s ====================="},
+    {"role": "assistant", "content": "Reproduced: TimeoutError after the 10-second test timeout, while 12 other tests pass. The export path hangs rather than failing fast. Next I'll inspect the retry logic in the client."},
+    {"role": "user", "content": "Go ahead."},
+    {"role": "assistant", "content": "Reading the client's fetch loop.", "tool_calls": [{"name": "read_file", "args": {"path": "src/acme/client.py", "start": 40, "end": 90}, "id": "c2", "type": "tool_call"}]},
+    {"role": "tool", "tool_call_id": "c2", "name": "read_file", "content": " 40  class MetricsClient:\n 41      def __init__(self, base_url, backoff=2.0):\n 42          self.base_url = base_url\n 43          self.backoff = backoff\n 44  \n 45      def _fetch(self, path):\n 46          while True:\n 47              resp = self._transport.get(path)\n 48              if resp.status_code == 429:\n 49                  time.sleep(self.backoff)\n 50                  continue\n 51              if resp.status_code >= 500:\n 52                  time.sleep(self.backoff)\n 53                  continue\n 54              return resp\n 55  \n 56      def _fetch_with_conn_retry(self, path):\n 57          attempts = 0\n 58          while attempts < 4:\n 59              try:\n 59                  return self._fetch(path)\n 60              except ConnectionError:\n 61                  attempts += 1\n 62                  time.sleep(self.backoff * attempts)\n 63          return None\n 64  \n 65      def export_metrics(self, payload):\n 66          resp = self._fetch_with_conn_retry('/v1/metrics')\n 67          if resp is None:\n 68              return None\n 69          return resp.json()"},
+    {"role": "assistant", "content": "Found the suspect: _fetch retries 429s and 5xxs in an unbounded while-True with a fixed 2-second sleep, so under the test's rate-limit mock it never terminates. One alternative hypothesis to rule out first: the sandbox's DNS resolution was implicated in a prior timeout incident. Is the test hitting real network here?"},
+    {"role": "user", "content": "It's not DNS. The tests run with a mocked transport, no real network."},
+    {"role": "assistant", "content": "Right, a mocked transport rules out DNS entirely. So the unbounded 429 loop is the prime suspect. Proposed fix: cap retries at 3 attempts with exponential backoff capped at 30 seconds, and raise RateLimitError on exhaustion so callers fail fast instead of hanging."},
+    {"role": "user", "content": "Apply the fix."},
+    {"role": "assistant", "content": "Patch applied locally to _fetch: a shared attempts counter capped at 3 with exponential backoff. Re-running the test.", "tool_calls": [{"name": "run_tests", "args": {"path": "tests/test_metrics.py", "keyword": "test_export_metrics"}, "id": "c3", "type": "tool_call"}]},
+    {"role": "tool", "tool_call_id": "c3", "name": "run_tests", "content": "FAILED tests/test_metrics.py::test_export_metrics_times_out - AssertionError: expected 3 fetch calls, got 5"},
+    {"role": "assistant", "content": "New failure mode: the mock expects exactly 3 fetch attempts but observed 5. My cap landed only in the 429 branch; the 5xx branch and the connection-reset wrapper still count separately. The cap must be shared across every retry path."},
+    {"role": "user", "content": "Why were there 5 calls exactly?"},
+    {"role": "assistant", "content": "Because each branch keeps its own local state: the 429 loop capped at 3, then a connection reset inside the wrapper allowed 2 more through _fetch_with_conn_retry. Two locals, one shared budget missing. I'll hoist a single attempts counter across both branches and the wrapper."},
+    {"role": "user", "content": "Okay, hoist the counter and re-run."},
+    {"role": "assistant", "content": "Counter hoisted into one shared budget across the 429 branch, the 5xx branch, and the connection wrapper. Re-running.", "tool_calls": [{"name": "run_tests", "args": {"path": "tests/test_metrics.py", "keyword": "test_export_metrics"}, "id": "c4", "type": "tool_call"}]},
+    {"role": "tool", "tool_call_id": "c4", "name": "run_tests", "content": "FAILED tests/test_metrics.py::test_export_metrics_times_out - AttributeError: 'NoneType' object has no attribute 'json'"},
+    {"role": "assistant", "content": "Progress: the loop now terminates, but exhaustion returns None from _fetch_with_conn_retry and export_metrics calls .json() on it. The exhaustion path must raise RateLimitError carrying the last response instead of silently returning None."},
+    {"role": "user", "content": "Fix that too."},
+    {"role": "assistant", "content": "Exhaustion now raises RateLimitError with the last response attached. Re-running the full file.", "tool_calls": [{"name": "run_tests", "args": {"path": "tests/test_metrics.py"}, "id": "c5", "type": "tool_call"}]},
+    {"role": "tool", "tool_call_id": "c5", "name": "run_tests", "content": "tests/test_metrics.py .............                                    [100%]\n13 passed in 3.08s"},
+    {"role": "assistant", "content": "Green: all 13 tests pass in 3.08 seconds. Root cause was the unbounded 429/5xx retry loop with per-branch counters; the fix is one shared cap of 3 attempts, exponential backoff capped at 30 seconds, and RateLimitError on exhaustion."},
+    {"role": "user", "content": "What was the actual root cause again, in one line?"},
+    {"role": "assistant", "content": "In one line: _fetch retried rate limits forever because each retry branch kept its own counter, so no global cap existed."},
+    {"role": "user", "content": "Any regressions to watch for?"},
+    {"role": "assistant", "content": "Watch for callers that silently relied on infinite retries. A grep shows only the metrics exporter calls _fetch, so blast radius is contained. I'd also add a retry_exhausted_total metric so exhaustion is observable in production rather than invisible."},
+    {"role": "user", "content": "File the follow-up."},
+    {"role": "assistant", "content": "Follow-up filed: add a retry_exhausted_total counter to the exporter, and pin the test's mocked 429 sequence explicitly so a future regression cannot silently pass."}
+  ],
+  "facts": [
+    {"id": "F1", "text": "The failing test was tests/test_metrics.py::test_export_metrics_times_out, failing with TimeoutError after the 10-second test timeout.", "message_ids": [2], "segment": 4},
+    {"id": "F2", "text": "Root cause: client._fetch retried 429s and 5xxs in an unbounded while-True loop with a fixed 2-second sleep.", "message_ids": [6, 7], "segment": 4},
+    {"id": "F3", "text": "DNS was ruled out because the tests run with a mocked transport and no real network.", "message_ids": [7, 8], "segment": 5},
+    {"id": "F4", "text": "The first fix attempt failed because retry counters were per-branch: the mock expected 3 fetch calls but observed 5.", "message_ids": [12, 13, 15], "segment": 4},
+    {"id": "F5", "text": "Final fix: one shared attempts counter across the 429 branch, the 5xx branch, and the connection wrapper, capped at 3 attempts.", "message_ids": [15, 17], "segment": 5},
+    {"id": "F6", "text": "Backoff is exponential and capped at 30 seconds.", "message_ids": [9], "segment": 2},
+    {"id": "F7", "text": "On retry exhaustion the client now raises RateLimitError carrying the last response, instead of returning None.", "message_ids": [19], "segment": 4},
+    {"id": "F8", "text": "Only the metrics exporter calls _fetch, so no other callers relied on infinite retries.", "message_ids": [27], "segment": 5},
+    {"id": "F9", "text": "Follow-ups filed: add a retry_exhausted_total counter, and pin the mocked 429 sequence in the test.", "message_ids": [29], "segment": 7}
+  ],
+  "entities": [
+    {"name": "failing_test", "value": "test_export_metrics_times_out", "message_ids": [0]},
+    {"name": "faulty_module", "value": "src/acme/client.py", "message_ids": [5]},
+    {"name": "retry_cap", "value": "3 attempts", "message_ids": [9, 15]},
+    {"name": "backoff_cap", "value": "30 seconds", "message_ids": [9]},
+    {"name": "exhaustion_error", "value": "RateLimitError", "message_ids": [9, 19]},
+    {"name": "follow_up_metric", "value": "retry_exhausted_total", "message_ids": [27, 29]}
+  ],
+  "qa_probes": [
+    {"id": "Q1", "question": "What was the root cause of the test timeout?", "answer": "An unbounded retry loop on 429/5xx responses with per-branch counters and no global cap.", "answer_keywords": ["429", "unbounded"], "source_message_ids": [6, 7, 25], "segment": 4},
+    {"id": "Q2", "question": "Why was DNS ruled out as a cause?", "answer": "The tests run with a mocked transport and no real network.", "answer_keywords": ["mocked"], "source_message_ids": [7, 8], "segment": 5},
+    {"id": "Q3", "question": "What is the retry cap and the backoff ceiling after the fix?", "answer": "3 attempts with exponential backoff capped at 30 seconds.", "answer_keywords": ["3", "30"], "source_message_ids": [9], "segment": 2},
+    {"id": "Q4", "question": "Why did the first fix attempt still make 5 fetch calls?", "answer": "Each retry branch kept its own local counter, so the cap only applied to one branch.", "answer_keywords": ["branch"], "source_message_ids": [13, 15], "segment": 4},
+    {"id": "Q5", "question": "What exception is raised on retry exhaustion now?", "answer": "RateLimitError, carrying the last response.", "answer_keywords": ["ratelimiterror"], "source_message_ids": [19], "segment": 4},
+    {"id": "Q6", "question": "Which code is the only caller of _fetch, keeping the blast radius contained?", "answer": "The metrics exporter.", "answer_keywords": ["exporter"], "source_message_ids": [27], "segment": 5},
+    {"id": "Q7", "question": "What follow-up observability metric was filed?", "answer": "retry_exhausted_total.", "answer_keywords": ["retry_exhausted_total"], "source_message_ids": [27, 29], "segment": 7}
+  ]
+}
